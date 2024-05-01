@@ -33,26 +33,21 @@ type RequestTaskArgs struct {
 	ClientId int
 }
 
-type CompleteTaskArgs struct {
-	OutputFiles []string
-	WorkerId    int
-	TaskNum     int
-}
-
-type CompleteTaskReply struct{}
-
 type MapWorkerParams struct {
 	InputFile   string
 	NumReducers int
 }
 
 type ReduceWorkerParams struct {
+	InputFiles []string
 }
 
 type RequestTaskReply struct {
-	Type      TaskType
-	TaskNum   int
-	MapParams MapWorkerParams
+	Type         TaskType
+	TaskNum      int
+	WorkerId     int
+	MapParams    MapWorkerParams
+	ReduceParams ReduceWorkerParams
 }
 
 // Cook up a unique-ish UNIX-domain socket name

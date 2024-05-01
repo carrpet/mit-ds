@@ -17,81 +17,34 @@ const (
 	COMPLETED
 )
 
-type Task struct {
-	Num        int
-	Status     TaskStatus
-	Worker     int
-	InputFiles []string
-	Type       TaskType
-}
-
-func (t Task) ToReply(nReduce int, r *RequestTaskReply) {
-	r.MapParams.InputFile = t.InputFiles[0]
-	r.TaskNum = t.Num
+func (t mapTask) ToReply(nReduce int, r *RequestTaskReply) {
+	r.MapParams.InputFile = t.input
+	r.TaskNum = t.id
 	r.MapParams.NumReducers = nReduce
-	r.Type = t.Type
-}
-
-type TaskList struct {
-	tasks       []Task
-	assignments map[int]*Task
-}
-
-func NewTaskList(inFiles []string) TaskList {
-
-	initTasks := make([]Task, len(inFiles))
-
-	for i, name := range inFiles {
-		initTasks[i] = Task{
-			Num:        i,
-			Status:     IDLE,
-			InputFiles: []string{name},
-		}
-
-	}
-
-	return TaskList{
-		tasks:       initTasks,
-		assignments: map[int]*Task{},
-	}
-
-}
-
-func (t TaskList) GetAssignedTask(id int) (*Task, bool) {
-	val, exists := t.assignments[id]
-	return val, exists
-
-}
-
-func (l TaskList) AssignNewTask(workerId int) (*Task, bool) {
-	for _, t := range l.tasks {
-		if t.Status == IDLE {
-			t.Status = INPROGRESS
-			t.Worker = workerId
-			l.assignments[workerId] = &t
-			return &t, true
-		}
-	}
-
-	return nil, false
-
+	r.Type = Map
+	r.WorkerId = t.worker
 }
 
 type Coordinator struct {
 	// Your definitions here.
-	TaskList    TaskList
-	NumReducers int
-	isDone      bool
+	numReducers int
+	//isDone      bool
+	//tasklist
+	workload
 }
 
-func New(files []string, nReduce int) Coordinator {
+func NewCoordinator(input []string, numReducers int) Coordinator {
 	// the number of tasks is the number of input files plus the nReduce param
 	//tasks := make([]Task, 0, len(files)+nReduce)
-
+	tasksFactory := &tasksFactory{
+		input,
+		numReducers,
+	}
+	workload := tasksFactory.createWorkload()
 	return Coordinator{
-		TaskList:    NewTaskList(files),
-		NumReducers: nReduce,
-		isDone:      false,
+		numReducers,
+		//isDone:      false,
+		workload,
 	}
 }
 
@@ -110,24 +63,19 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) RequestTask(req *RequestTaskArgs, reply *RequestTaskReply) error {
 	// if client has already been assigned a task just return it, since it may be the case
 	// that the client died and restarted and now needs that task reassigned to it
-	assigned, exists := c.TaskList.GetAssignedTask(req.ClientId)
-	if exists {
-		assigned.ToReply(c.NumReducers, reply)
+
+	if c.isMapPhase() {
+
+		assigned, ok := c.assignMapTask(req.ClientId)
+		if !ok {
+			return errors.New("could not find a task to assign")
+
+		}
+		assigned.ToReply(c.numReducers, reply)
 		return nil
-
 	}
 
-	assigned, ok := c.TaskList.AssignNewTask(req.ClientId)
-	if !ok {
-		return errors.New("could not find a task to assign")
-
-	}
-	assigned.ToReply(c.NumReducers, reply)
 	return nil
-
-}
-
-func (c *Coordinator) CompleteTask(req *CompleteTaskArgs, reply *CompleteTaskReply) error {
 
 }
 
@@ -151,21 +99,18 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
 
-	// Your code here.
-
-	return ret
+	return c.isDone()
 }
 
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := New(files, nReduce)
+	c := NewCoordinator(files, nReduce)
 
 	// Your code here.
-
 	c.server()
+	go c.reconcile()
 	return &c
 }

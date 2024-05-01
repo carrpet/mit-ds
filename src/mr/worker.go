@@ -1,19 +1,27 @@
 package mr
 
 import (
+	"bufio"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"log"
 	"net/rpc"
 	"os"
+	"slices"
 	"sort"
+	"strings"
 )
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
 	Key   string
 	Value string
+}
+
+type keyvalues struct {
+	key    string
+	values []string
 }
 
 // for sorting by key.
@@ -30,6 +38,10 @@ func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
+}
+
+func MapOutputFilename(workerId, taskId, reducerNum int) string {
+	return fmt.Sprintf("mr-worker%d-%d-%d", workerId, taskId, reducerNum)
 }
 
 // main/mrworker.go calls this function.
@@ -55,6 +67,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			filename := reply.MapParams.InputFile
 			nReduce := reply.MapParams.NumReducers
 			taskNum := reply.TaskNum
+			//os.ReadFile()
 			file, err := os.Open(filename)
 			if err != nil {
 				log.Fatalf("cannot open %v", filename)
@@ -73,8 +86,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			filenames := make([]string, nReduce)
 
 			for i := 0; i < nReduce; i++ {
-				outFileName := fmt.Sprintf("mr-%d-%d", taskNum, i)
-				files[i], err = os.Create(outFileName)
+				outFileName := MapOutputFilename(reply.WorkerId, taskNum, i)
+				files[i], err = os.CreateTemp("", outFileName)
 				filenames[i] = outFileName
 				if err != nil {
 					log.Fatalf("cannot write intermediate file %v", outFileName)
@@ -86,17 +99,151 @@ func Worker(mapf func(string, string) []KeyValue,
 				files[reducer].WriteString(fmt.Sprintf("%v %v\n", kv.Key, kv.Value))
 			}
 
-			for _, f := range files {
+			for i, f := range files {
+				os.Rename(f.Name(), filenames[i])
 				f.Close()
 			}
 
-			ok := CallCompleteTask(filenames, taskNum, &CompleteTaskReply{})
-			if !ok {
-				log.Fatalf("could not confirm task completion for task %d", taskNum)
+		} else if reply.Type == Reduce {
+			bufio.New
+			files := []os.File{}
+			for _, fname := range reply.ReduceParams.InputFiles {
+				file, err := os.Open(fname)
+				if err != nil {
+					log.Fatalf("Cannot read reduce input file")
+				}
+				files = append(files, *file)
 			}
+			reduced, ok := reduceWork(files)
+			if !ok {
+
+			}
+
+		} else {
 
 		}
 	}
+
+}
+
+// return the index with the lowest key ignoring ""
+func compareLines(lines []string) int {
+	valkey := map[string]int{}
+	for i, l := range lines {
+		keyval := strings.Split(l, " ")
+		if len(keyval) == 2 {
+			key := keyval[0]
+			if key != "" {
+				valkey[keyval[0]] = i
+			}
+		}
+	}
+
+	keys := make([]string, len(valkey))
+	i := 0
+	for k, _ := range valkey {
+		keys[i] = k
+		i++
+	}
+
+	minVal := slices.Min(keys)
+	return valkey[minVal]
+
+}
+
+func processNextKey(s *bufio.Scanner) (string, []string, bool) {
+	isNewChar := false
+	keyval := strings.Split(s.Text(), " ")
+	if len(keyval) != 2 {
+		return "", nil, false
+	}
+	vals := []string{}
+	thiskey := keyval[0]
+	vals = append(vals, keyval[1])
+	for s.Scan() {
+		keyval := strings.Split(s.Text(), " ")
+		if len(keyval) != 2 {
+			return "", nil, false
+		}
+		if keyval[0] != thiskey {
+			isNewChar = true
+			break
+		}
+		vals = append(vals, keyval[1])
+
+	}
+
+	return thiskey, vals, !isNewChar
+
+}
+
+func reduceWork(files []io.Reader) ([]keyvalues, bool) {
+	results := []keyvalues{}
+	scanners := []*bufio.Scanner{}
+	for _, s := range files {
+		scanners = append(scanners, bufio.NewScanner(s))
+	}
+
+	filelines := make([]string, len(scanners))
+	numRemaining := len(scanners)
+
+	//initialize filelines
+	for i, sc := range scanners {
+		if sc.Scan() {
+			filelines[i] = sc.Text()
+		} else {
+			filelines[i] = ""
+			numRemaining--
+		}
+
+	}
+
+	for numRemaining > 0 {
+		nextLineIndex := compareLines(filelines)
+		key, values, isEOF := processNextKey(scanners[nextLineIndex])
+		if key == "" {
+			return nil, false
+		}
+
+		results = append(results, keyvalues{key, values})
+
+		if isEOF {
+			filelines[nextLineIndex] = ""
+			numRemaining--
+
+		} else {
+			filelines[nextLineIndex] = scanners[nextLineIndex].Text()
+		}
+
+	}
+
+	return results, true
+
+}
+
+func accumulateResults(input []keyvalues) []keyvalues {
+	if len(input) == 0 {
+		return nil
+	}
+	i := 0
+	accumulator := []string{}
+	output := []keyvalues{}
+	thisletter := input[0].key
+	for i < len(input) {
+		for i < len(input) && thisletter == input[i].key {
+			accumulator = append(accumulator, input[i].values...)
+			i++
+
+		}
+		output = append(output, keyvalues{thisletter, accumulator})
+		if i < len(input) {
+			thisletter = input[i].key
+			accumulator = []string{}
+		}
+
+	}
+
+	return output
 
 }
 
@@ -121,15 +268,6 @@ func CallRequestTask(reply *RequestTaskReply) bool {
 
 }
 
-func CallCompleteTask(outFiles []string, taskNum int, reply *CompleteTaskReply) bool {
-	args := CompleteTaskArgs{
-		OutputFiles: outFiles,
-		WorkerId:    os.Getpid(),
-		TaskNum:     taskNum,
-	}
-
-	return call("Coordinator.CompleteTask", &args, reply)
-}
 func CallExample() {
 
 	// declare an argument structure.
