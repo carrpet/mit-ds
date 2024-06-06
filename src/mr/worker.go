@@ -2,6 +2,7 @@ package mr
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -40,8 +41,41 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-func MapOutputFilename(workerId, taskId, reducerNum int) string {
-	return fmt.Sprintf("mr-worker%d-%d-%d", workerId, taskId, reducerNum)
+func MapOutputFilename(taskId, reducerNum int) string {
+	return fmt.Sprintf("mr-%d-%d", taskId, reducerNum)
+}
+
+func ReduceOutputFilename(reducerNum int) string {
+	return fmt.Sprintf("mr-out-%d", reducerNum)
+}
+
+func generateReduceInput(numMapTasks, reducerNum int) []string {
+	result := make([]string, numMapTasks)
+	for i := 0; i < numMapTasks; i++ {
+		result[i] = MapOutputFilename(i, reducerNum)
+	}
+
+	return result
+
+}
+
+func CheckMapComplete(taskId, numReducers int) bool {
+	for i := 0; i < numReducers; i++ {
+		if _, err := os.Stat(MapOutputFilename(taskId, i)); errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+
+	}
+	return true
+}
+
+func CheckReduceComplete(reducerNum int) bool {
+
+	if _, err := os.Stat(ReduceOutputFilename(reducerNum)); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+
+	return true
 }
 
 // main/mrworker.go calls this function.
@@ -62,10 +96,15 @@ func Worker(mapf func(string, string) []KeyValue,
 			return
 
 		}
+		/*
+			if reply.Type != None {
+				fmt.Printf("assigned task number %d", reply.TaskNum)
+			}
+		*/
 		if reply.Type == Map {
 			// read file contents
-			filename := reply.MapParams.InputFile
-			nReduce := reply.MapParams.NumReducers
+			filename := reply.InputFiles[0]
+			nReduce := reply.NumReducers
 			taskNum := reply.TaskNum
 			//os.ReadFile()
 			file, err := os.Open(filename)
@@ -76,7 +115,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			if err != nil {
 				log.Fatalf("cannot read %v", filename)
 			}
-			file.Close()
+			defer file.Close()
 
 			kvs := mapf(filename, string(content))
 
@@ -86,12 +125,13 @@ func Worker(mapf func(string, string) []KeyValue,
 			filenames := make([]string, nReduce)
 
 			for i := 0; i < nReduce; i++ {
-				outFileName := MapOutputFilename(reply.WorkerId, taskNum, i)
+				outFileName := MapOutputFilename(taskNum, i)
 				files[i], err = os.CreateTemp("", outFileName)
 				filenames[i] = outFileName
 				if err != nil {
 					log.Fatalf("cannot write intermediate file %v", outFileName)
 				}
+				defer files[i].Close()
 			}
 
 			for _, kv := range kvs {
@@ -99,27 +139,42 @@ func Worker(mapf func(string, string) []KeyValue,
 				files[reducer].WriteString(fmt.Sprintf("%v %v\n", kv.Key, kv.Value))
 			}
 
-			for i, f := range files {
-				os.Rename(f.Name(), filenames[i])
-				f.Close()
+			if !CheckMapComplete(taskNum, reply.NumReducers) {
+				for i, f := range files {
+					os.Rename(f.Name(), filenames[i])
+				}
+
 			}
 
 		} else if reply.Type == Reduce {
-			bufio.New
-			files := []os.File{}
-			for _, fname := range reply.ReduceParams.InputFiles {
+			var files []io.Reader
+			for _, fname := range reply.InputFiles {
 				file, err := os.Open(fname)
 				if err != nil {
-					log.Fatalf("Cannot read reduce input file")
+					log.Fatalf("Cannot read reduce input file %v", fname)
 				}
-				files = append(files, *file)
+				files = append(files, file)
 			}
 			reduced, ok := reduceWork(files)
 			if !ok {
-
+				log.Fatalf("reduce work encountered an error")
 			}
+			results := accumulateResults(reduced)
+			outFileName := fmt.Sprintf("mr-out-%d", reply.ReduceTaskNum)
+			f, err := os.CreateTemp("", outFileName)
+			if err != nil {
+				log.Fatalf("cannot open output file for writing: %v", outFileName)
+			}
+			defer f.Close()
+
+			for _, keyval := range results {
+				output := reducef(keyval.key, keyval.values)
+				f.WriteString(fmt.Sprintf("%v %v\n", keyval.key, output))
+			}
+			os.Rename(f.Name(), outFileName)
 
 		} else {
+			continue
 
 		}
 	}
@@ -141,7 +196,7 @@ func compareLines(lines []string) int {
 
 	keys := make([]string, len(valkey))
 	i := 0
-	for k, _ := range valkey {
+	for k := range valkey {
 		keys[i] = k
 		i++
 	}
@@ -299,7 +354,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
-	log.Printf("worker sending http connection request on socket: %s\n", sockname)
+	//log.Printf("worker sending http connection request on socket: %s\n", sockname)
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}

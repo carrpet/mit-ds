@@ -1,29 +1,193 @@
 package mr
 
 import (
+	"reflect"
 	"sync"
 	"testing"
-	"time"
 )
 
+func Test_NewTaskManager(t *testing.T) {
+	toTest := NewTaskManager([]string{"foo1", "foo2"}, 3)
+	expected := taskmanager{
+		l:           toTest.l,
+		assignments: map[int]int{},
+		tasks: []task{
+			{
+				ttype:      Map,
+				tid:        taskId{0, 0},
+				status:     IDLE,
+				inputFiles: []string{"foo1"},
+				assignedId: 0,
+			},
+			{
+				ttype:      Map,
+				tid:        taskId{1, 0},
+				status:     IDLE,
+				inputFiles: []string{"foo2"},
+				assignedId: 0,
+			},
+			{
+				ttype:      Reduce,
+				tid:        taskId{2, 0},
+				status:     IDLE,
+				inputFiles: []string{"mr-0-0", "mr-1-0"},
+				assignedId: 0,
+			},
+			{
+				ttype:      Reduce,
+				tid:        taskId{3, 1},
+				status:     IDLE,
+				inputFiles: []string{"mr-0-1", "mr-1-1"},
+				assignedId: 0,
+			},
+			{
+				ttype:      Reduce,
+				tid:        taskId{4, 2},
+				status:     IDLE,
+				inputFiles: []string{"mr-0-2", "mr-1-2"},
+				assignedId: 0,
+			},
+		},
+		totalCompleted:    0,
+		mapTasksCompleted: 0,
+		numMapTasks:       2,
+		numReducers:       3,
+	}
+
+	if !reflect.DeepEqual(*toTest, expected) {
+		t.Errorf("taskmanager initialization expected: %v, received: %v", expected, toTest)
+	}
+}
+
+func Test_taskmanager_unassignTask(t *testing.T) {
+	toTest := taskmanager{
+		l:           &sync.Mutex{},
+		assignments: map[int]int{8: 0},
+		tasks: []task{
+			{
+				ttype:      Map,
+				tid:        taskId{0, 0},
+				status:     INPROGRESS,
+				inputFiles: []string{"foo1"},
+				assignedId: 8,
+			},
+			{
+				ttype:      Map,
+				tid:        taskId{1, 0},
+				status:     IDLE,
+				inputFiles: []string{"foo2"},
+				assignedId: 0,
+			},
+		},
+	}
+
+	expected := taskmanager{
+		l:           toTest.l,
+		assignments: map[int]int{},
+		tasks: []task{
+			{
+				ttype:      Map,
+				tid:        taskId{0, 0},
+				status:     IDLE,
+				inputFiles: []string{"foo1"},
+				assignedId: 8,
+			},
+			{
+				ttype:      Map,
+				tid:        taskId{1, 0},
+				status:     IDLE,
+				inputFiles: []string{"foo2"},
+				assignedId: 0,
+			},
+		},
+	}
+
+	err := toTest.unassignTask(8)
+	if err != nil {
+		t.Error(err.Error())
+	}
+
+	if !reflect.DeepEqual(toTest, expected) {
+		t.Errorf("taskmanager unassign expected: %v, received: %v", expected, toTest)
+	}
+}
+
+func Test_taskmanager_completeTask(t *testing.T) {
+	toTest := taskmanager{
+		l:                 &sync.Mutex{},
+		assignments:       map[int]int{8: 0},
+		mapTasksCompleted: 0,
+		totalCompleted:    0,
+		tasks: []task{
+			{
+				ttype:      Map,
+				tid:        taskId{0, 0},
+				status:     INPROGRESS,
+				inputFiles: []string{"foo1"},
+				assignedId: 8,
+			},
+			{
+				ttype:      Map,
+				tid:        taskId{1, 0},
+				status:     IDLE,
+				inputFiles: []string{"foo2"},
+				assignedId: 0,
+			},
+		},
+	}
+
+	expected := taskmanager{
+		l:                 toTest.l,
+		assignments:       map[int]int{},
+		mapTasksCompleted: 1,
+		totalCompleted:    1,
+		tasks: []task{
+			{
+				ttype:      Map,
+				tid:        taskId{0, 0},
+				status:     COMPLETED,
+				inputFiles: []string{"foo1"},
+				assignedId: 8,
+			},
+			{
+				ttype:      Map,
+				tid:        taskId{1, 0},
+				status:     IDLE,
+				inputFiles: []string{"foo2"},
+				assignedId: 0,
+			},
+		},
+	}
+
+	err := toTest.completeTask(8)
+	if err != nil {
+		t.Error(err.Error())
+	}
+
+	if !reflect.DeepEqual(toTest, expected) {
+		t.Errorf("taskmanager complete expected: %v, received: %v", expected, toTest)
+	}
+}
+
+/*
 type TestParams struct {
 	input      int
-	expected   mapTask
+	expected   task
 	expectedOk bool
 }
 
-func Test_AssignMapTaskSequential(t *testing.T) {
+func Test_AssignTaskSequential(t *testing.T) {
 
 	tests := []struct {
-		first  tasks
+		first  taskmanager
 		second []TestParams
 	}{
 		// all tasks available and are assigned to new workers
 		// additional workers don't get worker
 		{
-			tasks{
+			taskmanager{
 				l: &sync.Mutex{},
-				mapTasks: []mapTask{
+				tasks: []task{
 					{
 						id:     0,
 						status: IDLE,
@@ -39,13 +203,13 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 						status: IDLE,
 						input:  "f3",
 					}},
-				mapAssignments: map[int]int{},
-				numReducers:    5,
+				assignments: map[int]int{},
+				numReducers: 5,
 			},
 			[]TestParams{
 				{
 					1,
-					mapTask{0, 1, INPROGRESS, "f1"},
+					task{0, taskId{0,0}, INPROGRESS, []string{"f1"},1},
 					true,
 				},
 				{
@@ -70,7 +234,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 
 		// return the assign task if it is already assigned to the current requestor
 		{
-			tasks{
+			taskmanager{
 				l: &sync.Mutex{},
 				mapTasks: []mapTask{
 					{
@@ -80,7 +244,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 						input:  "f1",
 					},
 				},
-				mapAssignments: map[int]int{5: 0},
+				assignments: map[int]int{5: 0},
 			},
 			[]TestParams{
 				{
@@ -94,7 +258,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 		// assign the last inprogress to a new worker, and the next new worker shouldn't get
 		// any work
 		{
-			tasks{
+			taskmanager{
 				l: &sync.Mutex{},
 				mapTasks: []mapTask{
 					{
@@ -115,7 +279,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 						input:  "f3",
 					},
 				},
-				mapAssignments: map[int]int{1: 0, 3: 2},
+				assignments: map[int]int{1: 0, 3: 2},
 			},
 			[]TestParams{
 				{
@@ -137,7 +301,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 		},
 		// one idle task, remainder completed
 		{
-			tasks{
+			taskmanager{
 				l: &sync.Mutex{},
 				mapTasks: []mapTask{
 					{
@@ -156,7 +320,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 						input:  "f3",
 					},
 				},
-				mapAssignments: map[int]int{},
+				assignments: map[int]int{},
 			},
 			[]TestParams{
 				{
@@ -174,7 +338,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 
 		// all inprogress tasks
 		{
-			tasks{
+			taskmanager{
 				l: &sync.Mutex{},
 				mapTasks: []mapTask{
 					{
@@ -190,7 +354,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 						input:  "f2",
 					},
 				},
-				mapAssignments: map[int]int{8: 0, 11: 1},
+				assignments: map[int]int{8: 0, 11: 1},
 			},
 			[]TestParams{
 				{
@@ -203,7 +367,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 
 		// all completed tasks
 		{
-			tasks{
+			taskmanager{
 				l: &sync.Mutex{},
 				mapTasks: []mapTask{
 					{
@@ -217,7 +381,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 						input:  "f2",
 					},
 				},
-				mapAssignments: map[int]int{},
+				assignments: map[int]int{},
 			},
 			[]TestParams{
 				{
@@ -229,12 +393,6 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 		},
 	}
 
-	/*
-		tasksFactory := &tasksFactory{
-			input: []string{"f1", "f2", "f3"},
-		}
-	*/
-	//workload := tasksFactory.createWorkload()
 	for _, tt := range tests {
 		toTest := tt.first
 		testParamsList := tt.second
@@ -251,7 +409,7 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 			}
 		}
 
-		/*
+
 
 			actual, ok = workload.getAssignedMapTask(tt.n)
 			if actual != tt.expected {
@@ -263,14 +421,14 @@ func Test_AssignMapTaskSequential(t *testing.T) {
 				t.Errorf("getAsssignedMapTask(%d): expected %t, actual %t", tt.n, tt.expectedOk, ok)
 
 			}
-		*/
+
 	}
 
 }
 
 func Test_AssignTaskConcurrent(t *testing.T) {
 
-	toTest := tasks{
+	toTest := taskmanager{
 		l: &sync.Mutex{},
 		mapTasks: []mapTask{
 			{
@@ -304,7 +462,7 @@ func Test_AssignTaskConcurrent(t *testing.T) {
 				input:  "f2",
 			},
 		},
-		mapAssignments: map[int]int{1: 1, 3: 3, 5: 5},
+		assignments: map[int]int{1: 1, 3: 3, 5: 5},
 	}
 	doTask := func(wid int) {
 		toTest.assignMapTask(wid)
@@ -325,3 +483,45 @@ func Test_AssignTaskConcurrent(t *testing.T) {
 
 	time.Sleep(5 * time.Second)
 }
+*/
+
+/*
+func Test_taskmanager_unassignTask(t *testing.T) {
+	type fields struct {
+		l                 *sync.Mutex
+		assignments       map[int]int
+		tasks             []task
+		totalCompleted    int
+		mapTasksCompleted int
+		numMapTasks       int
+		numReducers       int
+	}
+	type args struct {
+		workerId int
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		wantErr bool
+	}{
+		// TODO: Add test cases.
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := &taskmanager{
+				l:                 tt.fields.l,
+				assignments:       tt.fields.assignments,
+				tasks:             tt.fields.tasks,
+				totalCompleted:    tt.fields.totalCompleted,
+				mapTasksCompleted: tt.fields.mapTasksCompleted,
+				numMapTasks:       tt.fields.numMapTasks,
+				numReducers:       tt.fields.numReducers,
+			}
+			if err := tr.unassignTask(tt.args.workerId); (err != nil) != tt.wantErr {
+				t.Errorf("taskmanager.unassignTask() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+*/

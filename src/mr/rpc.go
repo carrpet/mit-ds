@@ -18,6 +18,7 @@ type TaskType int
 const (
 	Map TaskType = iota
 	Reduce
+	None
 )
 
 type ExampleArgs struct {
@@ -33,21 +34,13 @@ type RequestTaskArgs struct {
 	ClientId int
 }
 
-type MapWorkerParams struct {
-	InputFile   string
-	NumReducers int
-}
-
-type ReduceWorkerParams struct {
-	InputFiles []string
-}
-
 type RequestTaskReply struct {
-	Type         TaskType
-	TaskNum      int
-	WorkerId     int
-	MapParams    MapWorkerParams
-	ReduceParams ReduceWorkerParams
+	Type          TaskType
+	TaskNum       int
+	WorkerId      int
+	InputFiles    []string
+	ReduceTaskNum int
+	NumReducers   int
 }
 
 // Cook up a unique-ish UNIX-domain socket name

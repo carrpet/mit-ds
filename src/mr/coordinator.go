@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -17,34 +16,17 @@ const (
 	COMPLETED
 )
 
-func (t mapTask) ToReply(nReduce int, r *RequestTaskReply) {
-	r.MapParams.InputFile = t.input
-	r.TaskNum = t.id
-	r.MapParams.NumReducers = nReduce
-	r.Type = Map
-	r.WorkerId = t.worker
-}
-
 type Coordinator struct {
 	// Your definitions here.
-	numReducers int
-	//isDone      bool
-	//tasklist
-	workload
+	taskmanager
 }
 
 func NewCoordinator(input []string, numReducers int) Coordinator {
 	// the number of tasks is the number of input files plus the nReduce param
 	//tasks := make([]Task, 0, len(files)+nReduce)
-	tasksFactory := &tasksFactory{
-		input,
-		numReducers,
-	}
-	workload := tasksFactory.createWorkload()
+	taskmanager := *NewTaskManager(input, numReducers)
 	return Coordinator{
-		numReducers,
-		//isDone:      false,
-		workload,
+		taskmanager,
 	}
 }
 
@@ -61,19 +43,14 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) RequestTask(req *RequestTaskArgs, reply *RequestTaskReply) error {
-	// if client has already been assigned a task just return it, since it may be the case
-	// that the client died and restarted and now needs that task reassigned to it
-
-	if c.isMapPhase() {
-
-		assigned, ok := c.assignMapTask(req.ClientId)
-		if !ok {
-			return errors.New("could not find a task to assign")
-
-		}
-		assigned.ToReply(c.numReducers, reply)
+	task, ok := c.assignNextTask(req.ClientId)
+	if !ok {
+		reply.Type = None
 		return nil
 	}
+	//fmt.Printf("Task type is: %v, inputfiles is: %v", task.ttype, task.inputFiles)
+
+	task.ToReply(c.numReducers, reply)
 
 	return nil
 
@@ -91,7 +68,7 @@ func (c *Coordinator) server() {
 		log.Fatal("listen error:", e)
 	}
 
-	log.Printf("coordinator listening on socket %s\n", sockname)
+	//log.Printf("coordinator listening on socket %s\n", sockname)
 
 	go http.Serve(l, nil)
 }
@@ -111,6 +88,5 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	c.server()
-	go c.reconcile()
 	return &c
 }
